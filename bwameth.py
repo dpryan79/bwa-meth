@@ -33,7 +33,7 @@ except ImportError: # python3
     maketrans = str.maketrans
 from toolshed import nopen, reader, is_newer_b
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 def checkX(cmd):
     for p in os.environ['PATH'].split(":"):
@@ -66,7 +66,7 @@ def fasta_iter(fasta_name):
         header = next(header)[1:].strip()
         yield header, "".join(s.strip() for s in next(faiter)).upper()
 
-def convert_reads(fq1s, fq2s, out=sys.stdout):
+def convert_reads(fq1s, fq2s, out=sys.stdout, pbat=False):
 
     for fq1, fq2 in zip(fq1s.split(","), fq2s.split(",")):
         sys.stderr.write("converting reads in %s,%s\n" % (fq1, fq2))
@@ -100,6 +100,8 @@ ERROR!!! expecting FASTQ 4-tuples, but found a record %s that doesn't start with
                     lt80 += 1
 
                 char_a, char_b = ['CT', 'GA'][read_i]
+                if pbat:
+                    char_a, char_b = ['GA', 'CT'][read_i]
                 # keep original sequence as name.
                 name = " ".join((name,
                                 "YS:Z:" + seq +
@@ -254,7 +256,7 @@ def rname(fq1, fq2=""):
 
 
 def bwa_mem(fa, mfq, extra_args, threads=1, rg=None,
-            paired=True, set_as_failed=None):
+            paired=True, set_as_failed=None, pbat=False):
     conv_fa = convert_fasta(fa, just_name=True)
     if not is_newer_b(conv_fa, (conv_fa + '.amb', conv_fa + '.sa')):
         raise BWAMethException("first run bwameth.py index %s" % fa)
@@ -270,10 +272,10 @@ def bwa_mem(fa, mfq, extra_args, threads=1, rg=None,
     cmd += "-R '{rg}' -t {threads} {extra_args} {conv_fa} {mfq}"
     cmd = cmd.format(**locals())
     sys.stderr.write("running: %s\n" % cmd.lstrip("|"))
-    as_bam(cmd, fa, set_as_failed)
+    as_bam(cmd, fa, set_as_failed, pbat)
 
 
-def as_bam(pfile, fa, set_as_failed=None):
+def as_bam(pfile, fa, set_as_failed=None, pbat=False):
     """
     pfile: either a file or a |process to generate sam output
     fa: the reference fasta
@@ -293,6 +295,12 @@ def as_bam(pfile, fa, set_as_failed=None):
         pair_list = [Bam(toks) for toks in pair_list]
 
         for aln in handle_reads(pair_list, set_as_failed):
+            if pbat:
+                # Swap read 1 and 2, which I don't like, but...
+                if aln.flag & 64:
+                    aln.flag += 64
+                elif aln.flag & 128:
+                    aln.flag -= 64
             sys.stdout.write(str(aln) + '\n')
 
 def handle_header(line, out=sys.stdout):
@@ -399,9 +407,10 @@ write.table(df, row.names=FALSE, quote=FALSE, sep="\t")
             print("\t".join(d))
 
 
-def convert_fqs(fqs):
+def convert_fqs(fqs, pbat=False):
     script = __file__
-    return "'<%s %s c2t %s %s'" % (sys.executable, script, fqs[0],
+    conv = "g2a" if pbat else "c2t"
+    return "'<%s %s %s %s %s'" % (sys.executable, script, conv, fqs[0],
                fqs[1] if len(fqs) > 1
                       else ','.join(['NA'] * len(fqs[0].split(","))))
 
@@ -413,6 +422,9 @@ def main(args=sys.argv[1:]):
 
     if len(args) > 0 and args[0] == "c2t":
         sys.exit(convert_reads(args[1], args[2]))
+
+    if len(args) > 0 and args[0] == "g2a":
+        sys.exit(convert_reads(args[1], args[2], pbat=True))
 
     if len(args) > 0 and args[0] == "cnvs":
         sys.exit(cnvs_main(args[1:]))
@@ -429,6 +441,9 @@ def main(args=sys.argv[1:]):
             " reads to align to the original-bottom (OB) strand and will flag"
             " as failed those aligning to the forward, or original top (OT).",
         default=None, choices=('f', 'r'))
+    p.add_argument('--pbat', action='store_true', help="The library was prepared"
+            " using post-bisulfite adapter tagging, meaning that reads should"
+            " be aligned to the complementary strands")
     p.add_argument('--version', action='version', version='bwa-meth.py {}'.format(__version__))
 
     p.add_argument("fastqs", nargs="+", help="bs-seq fastqs to align. Run"
@@ -438,13 +453,14 @@ def main(args=sys.argv[1:]):
     args, pass_through_args = p.parse_known_args(args)
 
     # for the 2nd file. use G => A and bwa's support for streaming.
-    conv_fqs_cmd = convert_fqs(args.fastqs)
+    conv_fqs_cmd = convert_fqs(args.fastqs, pbat=args.pbat)
 
     bwa_mem(args.reference, conv_fqs_cmd, ' '.join(map(str, pass_through_args)),
              threads=args.threads, rg=args.read_group or
              rname(*args.fastqs),
              paired=len(args.fastqs) == 2,
-             set_as_failed=args.set_as_failed)
+             set_as_failed=args.set_as_failed,
+             pbat=args.pbat)
 
 if __name__ == "__main__":
     main(sys.argv[1:])
