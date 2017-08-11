@@ -275,6 +275,15 @@ def bwa_mem(fa, mfq, extra_args, threads=1, rg=None,
     as_bam(cmd, fa, set_as_failed, pbat)
 
 
+def reverse_complement(s):
+    """
+    s: A sequence to reverse complement
+    """
+    d = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A', 'N': 'N'}
+    s2 = ''.join([d[x] for x in s])[::-1]
+    return s2
+
+
 def as_bam(pfile, fa, set_as_failed=None, pbat=False):
     """
     pfile: either a file or a |process to generate sam output
@@ -296,12 +305,27 @@ def as_bam(pfile, fa, set_as_failed=None, pbat=False):
 
         for aln in handle_reads(pair_list, set_as_failed):
             if pbat:
-                # Swap read 1 and 2, which I don't like, but...
-                if aln.flag & 64:
-                    aln.flag += 64
-                elif aln.flag & 128:
-                    aln.flag -= 64
+                # Convert reads from CTOT/CTOB to match OT/OB reads
+                if aln.flag & 1:
+                    if aln.flag & 64:
+                        aln.flag += 64
+                    elif aln.flag & 128:
+                        aln.flag -= 64
+                else:
+                    # This is more annoying, everything has to be reversed
+                    if aln.flag & 16:
+                        aln.flag -= 16
+                    else:
+                        aln.flag += 16
+                    aln.qual = aln.qual[::-1]
+                    aln.seq = reverse_complement(aln.seq)
+                    if aln.cigar != '*':
+                        cigs = reversed(list(aln.cigs()))
+                        cigs = ["{}{}".format(c[0], c[1]) for c in cigs]
+                        aln.cigar = ''.join(cigs)
+                    
             sys.stdout.write(str(aln) + '\n')
+
 
 def handle_header(line, out=sys.stdout):
     toks = line.rstrip().split("\t")
